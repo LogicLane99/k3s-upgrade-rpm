@@ -1,0 +1,87 @@
+---
+# ============================================================
+# K3s Upgrade Plans
+# Placeholders are substituted at runtime by apply-upgrade.sh
+#
+# Sequencing:
+#   1. k3s-server-upgrade runs first (concurrency: 1 — one server at a time)
+#   2. k3s-agent-upgrade is BLOCKED until all servers are done
+#      (enforced by the prepare: block referencing the server Plan)
+#   3. Agents upgrade concurrently in groups of 2 with drain
+# ============================================================
+
+# ── Server Plan ──────────────────────────────────────────────
+apiVersion: upgrade.cattle.io/v1
+kind: Plan
+metadata:
+  name: k3s-server-upgrade
+  namespace: system-upgrade
+  labels:
+    k3s-upgrade: server
+spec:
+  # One server at a time — avoids etcd quorum loss
+  concurrency: 1
+
+  # Only target control-plane nodes
+  nodeSelector:
+    matchExpressions:
+      - key: node-role.kubernetes.io/control-plane
+        operator: In
+        values: ["true"]
+
+  serviceAccountName: system-upgrade
+
+  # Cordon server during upgrade (do NOT drain servers in k3s — etcd runs there)
+  cordon: true
+
+  # The actual upgrade container — copies k3s binary and restarts service
+  upgrade:
+    image: K3S_UPGRADE_IMAGE_PLACEHOLDER
+    command: ["k3s-upgrade"]
+
+  # prepare runs before upgrade on each node and waits for nothing on server plan
+  # (servers are the "gatekeeper" — agents wait for this plan via their own prepare block)
+
+  version: K3S_VERSION_PLACEHOLDER
+
+---
+# ── Agent Plan ───────────────────────────────────────────────
+apiVersion: upgrade.cattle.io/v1
+kind: Plan
+metadata:
+  name: k3s-agent-upgrade
+  namespace: system-upgrade
+  labels:
+    k3s-upgrade: agent
+spec:
+  # Two agents at a time — balance speed vs availability
+  concurrency: 2
+
+  # Only target worker/agent nodes (no control-plane label)
+  nodeSelector:
+    matchExpressions:
+      - key: node-role.kubernetes.io/control-plane
+        operator: DoesNotExist
+
+  serviceAccountName: system-upgrade
+
+  # Cordon + drain agents before upgrading — safely evict workloads
+  cordon: true
+  drain:
+    force: true
+    ignoreDaemonSets: true
+    deleteEmptydirData: true
+    skipWaitForDeleteTimeout: 60
+
+  upgrade:
+    image: K3S_UPGRADE_IMAGE_PLACEHOLDER
+    command: ["k3s-upgrade"]
+
+  # CRITICAL: This prepare block BLOCKS agent upgrades until
+  # the k3s-server-upgrade Plan has completed on ALL server nodes.
+  # The prepare container polls the server Plan status before proceeding.
+  prepare:
+    image: K3S_UPGRADE_IMAGE_PLACEHOLDER
+    args: ["prepare", "k3s-server-upgrade"]
+
+  version: K3S_VERSION_PLACEHOLDER
